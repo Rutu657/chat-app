@@ -132,7 +132,46 @@ export class MyraaAudioSession {
     this.isActivated = true;
     this.setState("connecting");
 
+    // Safe, cross-browser AudioContext initialization synchronously on user gesture
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) {
+      throw new Error("Holographic audio link unsupported: Web Audio API missing in browser.");
+    }
+
     try {
+      if (!this.inputAudioCtx || this.inputAudioCtx.state === "closed") {
+        this.inputAudioCtx = new AudioContextClass({ sampleRate: 16000 });
+      }
+      if (!this.outputAudioCtx || this.outputAudioCtx.state === "closed") {
+        this.outputAudioCtx = new AudioContextClass({ sampleRate: 24000 });
+      }
+
+      // Synchronously unlock Web Audio context on mobile browsers (iOS Safari / Mobile Chrome)
+      if (this.inputAudioCtx.state === "suspended") {
+        await this.inputAudioCtx.resume().catch(() => {});
+      }
+      if (this.outputAudioCtx.state === "suspended") {
+        await this.outputAudioCtx.resume().catch(() => {});
+      }
+
+      // Mobile Safari unlock trick: play 1 frame of silent buffer on user gesture
+      try {
+        const silentBuffer = this.outputAudioCtx.createBuffer(1, 1, 24000);
+        const silentSource = this.outputAudioCtx.createBufferSource();
+        silentSource.buffer = silentBuffer;
+        silentSource.connect(this.outputAudioCtx.destination);
+        silentSource.start(0);
+      } catch (e) {}
+
+      // Unlock Web Speech Synthesis for mobile browsers if available
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        try {
+          const silentUtterance = new SpeechSynthesisUtterance("");
+          silentUtterance.volume = 0;
+          window.speechSynthesis.speak(silentUtterance);
+        } catch (e) {}
+      }
+
       // 1. Establish custom WebSocket server bridge
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       this.ws = new WebSocket(`${protocol}//${window.location.host}/live`);
@@ -142,25 +181,13 @@ export class MyraaAudioSession {
         console.log("[Myraa] Connected to server side WS bridge");
         try {
           // Guard against early user disconnect during connection setup
-          if (!this.isActivated) return;
+          if (!this.isActivated || !this.outputAudioCtx || !this.inputAudioCtx) return;
 
-          // Safe, cross-browser AudioContext initialization
-          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-          if (!AudioContextClass) {
-            throw new Error("Holographic audio link unsupported: Web Audio API missing in browser.");
-          }
-
-          this.inputAudioCtx = new AudioContextClass({ sampleRate: 16000 });
-          this.outputAudioCtx = new AudioContextClass({ sampleRate: 24000 });
-
-          // Ensure Audio Contexts are active and resumed to bypass browser security blocks
-          if (this.inputAudioCtx.state === "suspended") {
-            await this.inputAudioCtx.resume().catch(() => {});
-          }
+          // Double-check contexts are active
           if (this.outputAudioCtx.state === "suspended") {
             await this.outputAudioCtx.resume().catch(() => {});
           }
-          
+
           // Setup custom output Analyser & Volume Gains
           this.outputGainNode = this.outputAudioCtx.createGain();
           this.outputAnalyser = this.outputAudioCtx.createAnalyser();
@@ -360,6 +387,10 @@ export class MyraaAudioSession {
   // Direct raw PCM chunk scheduled playback at 24kHz
   private playAudioPCMChunk(base64Audio: string) {
     if (!this.outputAudioCtx || !this.outputGainNode) return;
+
+    if (this.outputAudioCtx.state === "suspended") {
+      this.outputAudioCtx.resume().catch(() => {});
+    }
 
     try {
       this.setState("speaking");
