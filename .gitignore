@@ -1,0 +1,17 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+secrets.json
+settings.json
+memories.json
+logs/
+Desktop/
+Downloads/
+agent_build/
+agent_dist/
+release/
